@@ -1,0 +1,6 @@
+
+<RCC>
+  <qresource prefix="loadfemurstep">
+    <file>images/fitting.png</file>
+  </qresource>
+</RCC>
