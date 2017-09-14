@@ -44,6 +44,62 @@ def vector_normalise(v):
 def loggerCallback(loggerEvent):
     print(loggerEvent.getMessageText())
 
+def getElementsCountAround(mesh, nodes, coordinates):
+    """
+    :return: elementsCountAround
+    """
+    apexNode = nodes.findNodeByIdentifier(1)
+    elementsCountAround = 0;
+    elementiterator = mesh.createElementiterator()
+    element = elementiterator.next()
+    while element.isValid():
+        eft = element.getElementfieldtemplate(coordinates, -1)
+        if eft.isValid():
+            nodeCount = eft.getNumberOfLocalNodes()
+            for n in range(1, nodeCount + 1):
+                node = element.getNode(eft, n)
+                if node == apexNode:
+                    elementsCountAround += 1
+                    break;
+        element = elementiterator.next()
+    return elementsCountAround
+
+def getNodeIdentifiersInRow(nodes, elementsCountAround, row):
+    """
+    :param: row starting at 0 for apex
+    :return: list of node identifiers in row
+    """
+    nodeIdentifiers = []
+    nodeiterator = nodes.createNodeiterator()
+    node = nodeiterator.next()
+    remainingnodesinrow = 1
+    currentRow = 0
+    while node.isValid():
+        if currentRow == row:
+            nodeIdentifiers.append(node.getIdentifier())
+        elif currentRow > row:
+            break
+        remainingnodesinrow -= 1
+        if remainingnodesinrow == 0:
+            currentRow += 1
+            remainingnodesinrow = elementsCountAround
+        node = nodeiterator.next()
+    return nodeIdentifiers
+
+def getMeanNodeCoordinates(fm, nodes, coordinates, nodeIdentifiers):
+    xMean = [ 0.0, 0.0, 0.0 ]
+    cache = fm.createFieldcache()
+    for nodeIdentifier in nodeIdentifiers:
+        node = nodes.findNodeByIdentifier(nodeIdentifier)
+        cache.setNode(node)
+        result, x = coordinates.evaluateReal(cache, 3)
+        for i in range(3):
+            xMean[i] += x[i]
+    count = len(nodeIdentifiers);
+    for i in range(3):
+        xMean[i] /= count
+    return xMean
+
 def loadfemur(filenameIn, filenameOut):
     """
     :param filenameIn:
@@ -67,49 +123,43 @@ def loadfemur(filenameIn, filenameOut):
     region.readFile(filenameIn)
     coordinates = fm.findFieldByName("coordinates")
 
+    mesh = fm.findMeshByDimension(2)
     nodes = fm.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
-    node1 = nodes.findNodeByIdentifier(1)
-    node5 = nodes.findNodeByIdentifier(5)
+    elementsCountAround = getElementsCountAround(mesh, nodes, coordinates)
+    print('elementsCountAround',elementsCountAround)
+    row1 = 1
+    row2 = mesh.getSize() // elementsCountAround
+    if row1 == row2:
+        row1 = 0
+    nodeIdentifiersRow1 = getNodeIdentifiersInRow(nodes, elementsCountAround, row1)
+    row1centre = getMeanNodeCoordinates(fm, nodes, coordinates, nodeIdentifiersRow1)
+    print('row', row1, '=', nodeIdentifiersRow1,', centre =', row1centre)
+    nodeIdentifiersRow2 = getNodeIdentifiersInRow(nodes, elementsCountAround, row2)
+    row2centre = getMeanNodeCoordinates(fm, nodes, coordinates, nodeIdentifiersRow2)
+    print('row', row2, '=', nodeIdentifiersRow2,', centre =', row2centre)
 
-    cache = fm.createFieldcache()
-    cache.setNode(node1)
-    result, node1pos = coordinates.evaluateReal(cache, 3)
-    cache.setNode(node5)
-    result, node5pos = coordinates.evaluateReal(cache, 3)
-
-    node15pos_delta = [(node5pos[i] - node1pos[i]) for i in range(3)]
-    axis = vector_normalise(node15pos_delta)
-    bottomCentre = [0.5*(node1pos[i] + node5pos[i]) for i in range(3)]
-
-    firstTopNode = 42
-    lastTopNode = 53
-    nTopNodes = lastTopNode - firstTopNode + 1
-    topCentre = [0.0, 0.0, 0.0]
-    for ni in range(firstTopNode, lastTopNode + 1):
-        node = nodes.findNodeByIdentifier(ni)
-        cache.setNode(node)
-        result, pos = coordinates.evaluateReal(cache, 3)
-        topCentre = [(topCentre[i] + pos[i]) for i in range(3)]
-    topCentre = [(topCentre[i]/nTopNodes) for i in range(3)]
-
-    bottomToTop = [(topCentre[i] - bottomCentre[i]) for i in range(3)]
-    forward = vector_normalise(vector_cross_product3(bottomToTop, axis))
-    up = vector_cross_product3(axis, forward)
+    bottomToTop = [(row2centre[i] - row1centre[i]) for i in range(3)]
+    up = vector_normalise(bottomToTop)
+    forwardPoint = getMeanNodeCoordinates(fm, nodes, coordinates, nodeIdentifiersRow1[:1])
+    forward = [(forwardPoint[i] - row1centre[i]) for i in range(3)]
+    size = vector_magnitude(forward)
+    axis = vector_cross_product3(forward, up)
+    axis = vector_normalise(axis)
+    forward = vector_cross_product3(up, axis)
 
     # create a single element plate mesh by just using xi coordinates of element 1
-    mesh = fm.findMeshByDimension(2)
     plateGroup = fm.createFieldElementGroup(mesh)
     plateGroup.setName("plate")
     plateMeshGroup = plateGroup.getMeshGroup()
     element1 = mesh.findElementByIdentifier(1)
     plateMeshGroup.addElement(element1)
-    plate_size = 4.0*vector_magnitude(node15pos_delta)
+    plate_size = 10.0*size
     minus05 = fm.createFieldConstant([-0.5,-0.5,0.0])
     xi = fm.findFieldByName("xi")
     xiMinus05 = fm.createFieldAdd(xi, minus05)
     plateTransform = fm.createFieldConstant(axis + forward + [0.0, 0.0, 0.0])
     plateTransCoordinates = fm.createFieldMatrixMultiply(1, xiMinus05, plateTransform)
-    plateCentre = [(bottomCentre[i] + 0.2*bottomToTop[i]) for i in range(3)]
+    plateCentre = [(row1centre[i] + 0.05*bottomToTop[i]) for i in range(3)]
     constPlateCentre = fm.createFieldConstant(plateCentre)
     plateCoordinates = fm.createFieldAdd(constPlateCentre, plateTransCoordinates)
 
@@ -128,9 +178,11 @@ def loadfemur(filenameIn, filenameOut):
     force = fm.createFieldMeshIntegral(penetration, coordinates, mesh)
     force.setNumbersOfPoints(4)
 
+    cache = fm.createFieldcache()
+
     result, forceValue = force.evaluateReal(cache, 1)
 
-    print("forceValue 1 = " + str(forceValue))
+    print("forceValue ", result, forceValue)
 
     # for oi in range(-20, 10):
     #     plateCentre = [(bottomCentre[i] - (oi*0.2)*bottomToTop[i]) for i in range(3)]
